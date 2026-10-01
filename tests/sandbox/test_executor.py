@@ -15,51 +15,46 @@ from openstaad_mcp.sandbox.const import ALLOWED_BUILTIN_EXCEPTIONS
 from openstaad_mcp.sandbox.executor import Executor
 
 
+class MockGeometry:
+    """Fake OpenSTAAD geometry sub-API."""
+
+    def GetNodeCount(self):
+        return 42
+
+    def GetNodeCoordinates(self, node_id):
+        return (1.0, 2.0, 3.0)
+
+    def GetBeamCount(self):
+        return 10
+
+    def GetBeamList(self):
+        return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+
+class MockOutput:
+    """Fake OpenSTAAD output sub-API."""
+
+    def GetBeamEndForces(self, beam_no, load_case):
+        return [100.0, -50.0, 25.0, 10.0, -5.0, 2.5]
+
+
+class MockSubApi:
+    """Fake empty OpenSTAAD sub-API."""
+
+
 class MockStaad:
     """Fake OpenSTAAD root for testing without COM."""
 
-    class Geometry:
-        @staticmethod
-        def GetNodeCount():
-            return 42
-
-        @staticmethod
-        def GetNodeCoordinates(node_id):
-            return (1.0, 2.0, 3.0)
-
-        @staticmethod
-        def GetBeamCount():
-            return 10
-
-        @staticmethod
-        def GetBeamList():
-            return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-
-    class Output:
-        @staticmethod
-        def GetBeamEndForces(beam_no, load_case):
-            return [100.0, -50.0, 25.0, 10.0, -5.0, 2.5]
-
-    class Load:
-        pass
-
-    class Property:
-        pass
-
-    class Support:
-        pass
-
-    class Command:
-        pass
-
-    class View:
-        pass
-
-    class Table:
-        pass
-
-    class Design:
-        pass
+    def __init__(self):
+        self.Geometry = MockGeometry()
+        self.Output = MockOutput()
+        self.Load = MockSubApi()
+        self.Property = MockSubApi()
+        self.Support = MockSubApi()
+        self.Command = MockSubApi()
+        self.View = MockSubApi()
+        self.Table = MockSubApi()
+        self.Design = MockSubApi()
 
     @staticmethod
     def GetApplicationVersion():
@@ -70,6 +65,24 @@ class MockStaad:
         return False
 
 
+class PlainView:
+    """Plain-Python stand-in for openstaadpy.OSView."""
+
+    def __init__(self):
+        self.export_calls: list[tuple[str, str, int, bool]] = []
+
+    def ExportView(self, directory, filename, file_format, overwrite):
+        self.export_calls.append((directory, filename, file_format, overwrite))
+        return True
+
+
+class PlainStaad:
+    """OpenSTAAD root with a sub-API that deliberately lacks _oleobj_."""
+
+    def __init__(self):
+        self.View = PlainView()
+
+
 @pytest.fixture
 def staad():
     return MockStaad()
@@ -78,6 +91,30 @@ def staad():
 @pytest.fixture
 def executor():
     return Executor()
+
+
+_LONG_SCRIPT_LINES = 2000
+
+
+def _long_script(line_count: int) -> str:
+    """Build a syntactically valid script far longer than any realistic user script."""
+    lines = ["total = 0.0"]
+    lines += [f"total += staad.Geometry.GetNodeCoordinates({i})[0]" for i in range(line_count)]
+    lines.append("result = total")
+    return "\n".join(lines)
+
+
+class TestScriptLength:
+    """The `code` argument has no length limit."""
+
+    def test_very_long_script_executes(self, staad, executor):
+        script = _long_script(_LONG_SCRIPT_LINES)
+        assert len(script) > 90_000
+
+        r = executor.execute(script, staad)
+
+        assert r.success, r.error
+        assert r.result == pytest.approx(_LONG_SCRIPT_LINES)
 
 
 class TestResultCapture:
@@ -289,6 +326,18 @@ class TestSandboxIsolation:
     def test_dunder_blocked(self, staad, executor):
         r = executor.execute("staad.__class__", staad)
         assert not r.success
+
+    def test_plain_view_export_is_validated_before_calling_raw_method(self, executor):
+        staad = PlainStaad()
+
+        result = executor.execute(
+            'staad.View.ExportView("C:\\\\exports\\\\..\\\\..\\\\Windows", "view.scr", 0, True)',
+            staad,
+        )
+
+        assert not result.success
+        assert "traversal" in result.error
+        assert staad.View.export_calls == []
 
     def test_builtins_not_leaking(self, staad, executor):
         """Ensure __builtins__ is not the full module."""
@@ -665,3 +714,55 @@ class TestExceptionHandling:
         code = "result = KeyboardInterrupt"
         r = executor.execute(code, staad)
         assert not r.success, "KeyboardInterrupt should not be available in sandbox"
+
+
+class TestInputInjection:
+    """Tests for ``__input`` data injection into the sandbox."""
+
+    def test_input_none_when_no_data(self, staad, executor):
+        """``input_data`` is None when no input_data is provided (backward compat)."""
+        r = executor.execute("result = input_data", staad)
+        assert r.success
+        assert r.result is None
+
+    def test_input_contains_provided_data(self, staad, executor):
+        data = (("a", "b"), (1, 2), (3, 4))
+        r = executor.execute("result = [list(row) for row in input_data]", staad, input_data=data)
+        assert r.success
+        assert r.result == [["a", "b"], [1, 2], [3, 4]]
+
+    def test_input_iterable(self, staad, executor):
+        """Sandbox code can iterate over ``input_data``."""
+        data = ((10,), (20,), (30,))
+        r = executor.execute(
+            "result = sum(row[0] for row in input_data)",
+            staad,
+            input_data=data,
+        )
+        assert r.success
+        assert r.result == 60
+
+    def test_input_indexable(self, staad, executor):
+        """Sandbox code can index into ``input_data``."""
+        data = (("x",), (42,))
+        r = executor.execute("result = input_data[1][0]", staad, input_data=data)
+        assert r.success
+        assert r.result == 42
+
+    def test_input_no_carryover(self, staad, executor):
+        """``input_data`` does not persist across executions."""
+        executor.execute("x = input_data", staad, input_data=((1,),))
+        r = executor.execute("result = input_data", staad)
+        assert r.success
+        assert r.result is None
+
+    def test_input_dict_shape(self, staad, executor):
+        """Dict-shaped input_data (XLSX multi-sheet) works."""
+        data = {"Sheet1": {"columns": ["a"], "rows": [[1], [2]]}}
+        r = executor.execute(
+            "input_data['Sheet1']['rows'].append([3])\nresult = [isinstance(input_data, dict), input_data]",
+            staad,
+            input_data=data,
+        )
+        assert r.success
+        assert r.result == [True, {"Sheet1": {"columns": ["a"], "rows": [[1], [2], [3]]}}]

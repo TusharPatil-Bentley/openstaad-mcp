@@ -186,6 +186,28 @@ The server supports two transport modes:
 | `execute_code` | Runs validated Python code against the connected STAAD.Pro model |
 | `get_status` | Returns connection state, STAAD version, model path, analysis status |
 
+### File I/O
+
+The `execute_code` tool supports optional **server-side file I/O** for bulk data workflows.
+Instead of passing large datasets through the agent's context window, the server reads/writes
+CSV and XLSX files directly and injects the data into the sandbox as the `input_data` variable.
+
+| Parameter | Description |
+|-----------|-------------|
+| `input_data_path` | Path to a `.csv` or `.xlsx` file. The server reads and parses it, then injects as the `input_data` variable in the sandbox. |
+| `output_data_path` | Path where the sandbox return value will be written. The return value must be a list-of-lists (CSV) or a `{sheet_name: {columns, rows}}` dict (multi-sheet XLSX). |
+| `overwrite` | Allow overwriting an existing output file (default `false`). |
+
+`input_data` has a stable, extension-specific shape:
+
+- CSV: a list of row lists. If a header is detected, it is `input_data[0]` and data rows start at `input_data[1:]`.
+- XLSX: a dict: `{sheet_name: {"columns": list, "rows": list_of_rows}}`.
+
+**Path containment:** File paths must resolve inside a configured allowed boundary before any read/write occurs.
+The server supports both **client-configured MCP roots** and **server-configured allowed directories** (via `--allowed-dirs` or `user_config.allowed_directories` in the manifest).
+The server validates paths against these boundaries before any file access.
+
+**Limits:** Max file size 50 MB, max 100K rows, max 500 columns, max 50 input sheets.
 
 ## Security Notes
 
@@ -277,7 +299,12 @@ ruff format --check .
   npm install -g @anthropic-ai/mcpb
   New-Item -ItemType Directory -Path mcpb-staging -Force
   Copy-Item dist/openstaad-mcp.exe mcpb-staging/
-  Copy-Item mcpb/manifest.json mcpb-staging/
+
+  $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"(.+)"$').Matches[0].Groups[1].Value
+  $manifest = Get-Content mcpb/manifest.json -Raw | ConvertFrom-Json
+  $manifest.version = $version
+  $manifest | ConvertTo-Json -Depth 10 | Set-Content mcpb-staging/manifest.json -Encoding utf8
+
   mcpb pack mcpb-staging/ openstaad-mcp.mcpb
   ```
 

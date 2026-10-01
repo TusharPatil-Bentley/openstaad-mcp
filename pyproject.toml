@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openstaad-mcp"
-version = "1.1.2"
+version = "1.3.0"
 description = "MCP server for Bentley STAAD.Pro via OpenSTAAD API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,8 +25,12 @@ dependencies = [
     "fastmcp>=3.2.3,<4",
     "packaging>=24",
     "starlette>=1.0.0,<2.0.0",
+    "pydantic>=2,<3",
     "pywin32>=311; platform_system == 'Windows'",
-    "openstaadpy @ git+https://github.com/BentleySystems/openstaadpy.git@306b77ba6a4bed68fd91f21df19c9fd5fc9fb2e1",
+    "openstaadpy @ git+https://github.com/BentleySystems/openstaadpy.git@233a74351e4903c0e0fc01bd1ef6ad11b584b87a",
+    "openpyxl>=3.1,<4",
+    "defusedxml>=0.7",
+    "chardet>=5,<8",
 ]
 
 [project.urls]
